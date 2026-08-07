@@ -1,5 +1,9 @@
 # Vesper Launcher
 
+<p align="center">
+  <img src="assets/launcherpreview.png" alt="Vesper Launcher" width="700">
+</p>
+
 A lightweight Minecraft Bedrock launcher and companion for Windows, built for Vesper UI.
 
 **[Download the latest release](https://github.com/universalspaces/Vesper-Launcher/releases/latest)**
@@ -19,4 +23,5 @@ Download `Vesper-Launcher-Setup-*.exe` from the latest release and run the insta
 
 Requires Windows 10/11 and Minecraft for Windows.
 
-Not affiliated with Mojang Studios, Microsoft, or Discord.
+> [!NOTE]
+> Not affiliated with Mojang Studios, Microsoft, or Discord.
