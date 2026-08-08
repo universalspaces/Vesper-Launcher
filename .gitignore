@@ -37,3 +37,6 @@ desktop.ini
 *.temp
 *.swp
 *.swo
+
+# Agentic Assistant
+.continue
