@@ -379,4 +379,19 @@ setInterval(updateSessionClock, 1000);
 (async () => {
   await loadSettings();
   await refreshStatus();
+
+  // Dismiss splash after everything is ready
+  const splash = byId("splash-screen");
+  if (splash) {
+    // Minimum display time (ms) so the animation isn't jarring
+    const minDisplay = 1800;
+    const elapsed = Date.now() - statusReceivedAt;
+    const remaining = Math.max(0, minDisplay - elapsed);
+
+    setTimeout(() => {
+      splash.classList.add("done");
+      // Remove from DOM after transition to free resources
+      setTimeout(() => splash.remove(), 700);
+    }, remaining);
+  }
 })();
