@@ -1,10 +1,10 @@
 {
   "name": "vesper-launcher",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Vesper launcher for Minecraft Bedrock on Windows",
   "main": "src/main.js",
-  "author": "Vesper",
-  "license": "UNLICENSED",
+  "author": "universalspaces",
+  "license": "MIT",
   "scripts": {
     "start": "electron .",
     "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js",
