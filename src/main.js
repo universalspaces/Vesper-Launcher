@@ -48,6 +48,21 @@ let lastMinecraftInfo = null;
 let lastPackStatus = null;
 let updateState = { status: app.isPackaged ? "idle" : "development", version: "", percent: 0, error: "" };
 
+// ── Single instance lock ──
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_event, _commandLine, _workingDirectory) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 app.setName("Vesper Launcher");
 
 function settingsPath() {
