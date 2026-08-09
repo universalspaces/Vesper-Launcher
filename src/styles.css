@@ -176,6 +176,13 @@ button { color: inherit; }
 .launch-subrow { width: min(100%, 390px); display: flex; margin-top: 11px; }
 .text-button { padding: 0; border: 0; background: none; color: #aaa7b2; font-size: 9px; letter-spacing: .09em; cursor: pointer; }
 .text-button:hover { color: white; }
+.text-button:disabled {
+  opacity: .4;
+  cursor: default;
+}
+.text-button:disabled:hover {
+  color: #aaa7b2;
+}
 
 .cards-row {
   display: grid;

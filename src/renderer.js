@@ -238,6 +238,13 @@ function applyStatus(status) {
   launchLabel.textContent = status.gameRunning ? "RUNNING" : minecraft.installed ? "LAUNCH" : "NOT INSTALLED";
   byId("launch-button").disabled = status.gameRunning || !minecraft.installed;
 
+  const minecraftReady = minecraft.installed;
+  byId("import-pack-home").disabled = !minecraftReady;
+  byId("import-pack-page").disabled = !minecraftReady;
+  byId("setup-import-pack").disabled = !minecraftReady;
+  byId("open-installed-pack").disabled = !minecraftReady;
+  byId("open-minecraft-data").disabled = !minecraftReady;
+
   renderRecentSessions(status.stats?.recentSessions || []);
   updateSessionClock();
   updateDiagnostics(status);
