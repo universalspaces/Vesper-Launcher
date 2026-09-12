@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, clipboard } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, clipboard, session } = require("electron");
 const { execFile, spawn } = require("node:child_process");
 const { promisify } = require("node:util");
 const fs = require("node:fs");
@@ -6,13 +6,12 @@ const os = require("node:os");
 const path = require("node:path");
 const { Client: DiscordRPCClient } = require("@xhayper/discord-rpc");
 const { autoUpdater } = require("electron-updater");
+const { PACK_VERSION, PACK_UUID, DISCORD_CLIENT_ID, DISCORD_LARGE_IMAGE_KEY, MINECRAFT_CACHE_MS, STATUS_BROADCAST_MIN_MS } = require("./config");
 
 const execFileAsync = promisify(execFile);
 const LAUNCHER_VERSION = app.getVersion();
-const VESPER_PACK_VERSION = "1.4.1";
-const VESPER_PACK_UUID = "e12f7b13-9454-4e73-abdc-90d81725f190";
-const DISCORD_CLIENT_ID = "1535375919215017986";
-const DISCORD_LARGE_IMAGE_KEY = "vesper";
+const VESPER_PACK_VERSION = PACK_VERSION;
+const VESPER_PACK_UUID = PACK_UUID;
 const launcherStartedAt = new Date();
 const DEFAULT_SETTINGS = Object.freeze({
   rpcEnabled: true,
@@ -30,6 +29,7 @@ const DEFAULT_STATS = Object.freeze({
   lastPlayedAt: null,
   lastSessionMs: 0,
   recentSessions: [],
+  activeSession: null,
 });
 
 let mainWindow = null;
@@ -46,6 +46,10 @@ let settings = { ...DEFAULT_SETTINGS };
 let stats = { ...DEFAULT_STATS, recentSessions: [] };
 let lastMinecraftInfo = null;
 let lastPackStatus = null;
+let minecraftInfoCache = { value: null, expiresAt: 0 };
+let statusBroadcastPromise = null;
+let lastStatusBroadcastAt = 0;
+let launchAttemptActive = false;
 let updateState = { status: app.isPackaged ? "idle" : "development", version: "", percent: 0, error: "" };
 
 // ── Single instance lock ──
@@ -93,10 +97,16 @@ function loadSettings() {
   return settings;
 }
 
+function writeJsonAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(value, null, 2), "utf8");
+  fs.renameSync(tempPath, filePath);
+}
+
 function saveSettings(nextSettings) {
   settings = sanitizeSettings({ ...settings, ...nextSettings });
-  fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
-  fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), "utf8");
+  writeJsonAtomic(settingsPath(), settings);
   return settings;
 }
 
@@ -117,6 +127,9 @@ function sanitizeStats(value) {
     lastPlayedAt: typeof value.lastPlayedAt === "string" ? value.lastPlayedAt : null,
     lastSessionMs: number(value.lastSessionMs),
     recentSessions,
+    activeSession: value.activeSession && typeof value.activeSession.startedAt === "string"
+      ? { startedAt: value.activeSession.startedAt }
+      : null,
   };
 }
 
@@ -130,8 +143,7 @@ function loadStats() {
 }
 
 function saveStats() {
-  fs.mkdirSync(path.dirname(statsPath()), { recursive: true });
-  fs.writeFileSync(statsPath(), JSON.stringify(stats, null, 2), "utf8");
+  writeJsonAtomic(statsPath(), stats);
 }
 
 function statsSnapshot() {
@@ -196,8 +208,10 @@ function installLauncherUpdate() {
 
 function beginGameSession() {
   if (gameStartedAt) return;
-  gameStartedAt = new Date();
+  const persistedStart = stats.activeSession?.startedAt ? new Date(stats.activeSession.startedAt) : null;
+  gameStartedAt = persistedStart && Number.isFinite(persistedStart.getTime()) ? persistedStart : new Date();
   stats.sessionCount += 1;
+  stats.activeSession = { startedAt: gameStartedAt.toISOString() };
   saveStats();
 }
 
@@ -209,7 +223,11 @@ function finishGameSession() {
   stats.lastSessionMs = durationMs;
   stats.longestSessionMs = Math.max(stats.longestSessionMs, durationMs);
   stats.lastPlayedAt = endedAt.toISOString();
-  stats.recentSessions = [{ startedAt: gameStartedAt.toISOString(), endedAt: endedAt.toISOString(), durationMs }, ...stats.recentSessions].slice(0, 12);
+  stats.recentSessions = [
+    { startedAt: gameStartedAt.toISOString(), endedAt: endedAt.toISOString(), durationMs },
+    ...stats.recentSessions,
+  ].slice(0, 12);
+  stats.activeSession = null;
   gameStartedAt = null;
   saveStats();
 }
@@ -235,7 +253,7 @@ async function runPowerShell(script) {
   return stdout.trim();
 }
 
-async function getMinecraftInfo() {
+async function detectMinecraftInfo() {
   if (process.platform !== "win32") {
     return { installed: false, name: "Minecraft for Windows", appId: "", version: "", packageName: "", packageFamilyName: "", packageFullName: "", dataRoot: "", dataRoots: [] };
   }
@@ -289,6 +307,20 @@ $pkg = if ($family) {
   } catch (error) {
     return { installed: false, name: "Minecraft for Windows", appId: "", version: "", packageName: "", packageFamilyName: "", packageFullName: "", dataRoot: "", dataRoots: [], error: error.message };
   }
+}
+
+async function getMinecraftInfo({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && minecraftInfoCache.value && minecraftInfoCache.expiresAt > now) {
+    return minecraftInfoCache.value;
+  }
+  const value = await detectMinecraftInfo();
+  minecraftInfoCache = { value, expiresAt: now + MINECRAFT_CACHE_MS };
+  return value;
+}
+
+function invalidateMinecraftInfoCache() {
+  minecraftInfoCache = { value: null, expiresAt: 0 };
 }
 
 async function isMinecraftRunning() {
@@ -375,14 +407,23 @@ function bundledPackPath() {
 
 async function launchMinecraft() {
   if (process.platform !== "win32") throw new Error("Minecraft Bedrock launching is supported on Windows 10/11 only.");
-  const info = await getMinecraftInfo();
+  if (launchAttemptActive) throw new Error("Minecraft is already being launched.");
+  const info = await getMinecraftInfo({ force: true });
   if (!info.installed || !info.appId) throw new Error("Minecraft for Windows was not found.");
-  const child = spawn("explorer.exe", [`shell:AppsFolder\\${info.appId}`], { detached: true, stdio: "ignore", windowsHide: true });
-  child.unref();
-  stats.launchCount += 1;
-  saveStats();
-  if (settings.minimizeOnLaunch && mainWindow) mainWindow.minimize();
-  return { ok: true, name: info.name, version: info.version };
+  launchAttemptActive = true;
+  try {
+    const child = spawn("explorer.exe", [`shell:AppsFolder\\${info.appId}`], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    invalidateMinecraftInfoCache();
+    if (settings.minimizeOnLaunch && mainWindow) mainWindow.minimize();
+    return { ok: true, name: info.name, version: info.version };
+  } finally {
+    setTimeout(() => { launchAttemptActive = false; }, 5000);
+  }
 }
 
 async function importVesperPack() {
@@ -468,7 +509,6 @@ async function getStatus() {
     platform: process.platform,
     launcherVersion: LAUNCHER_VERSION,
     packVersion: VESPER_PACK_VERSION,
-    username: os.userInfo().username,
     minecraft,
     pack,
     stats: statsSnapshot(),
@@ -529,11 +569,24 @@ function updateTrayMenu(status) {
   ]));
 }
 
-async function broadcastStatus() {
-  const status = await getStatus();
-  updateTrayMenu(status);
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("status:update", status);
-  return status;
+async function broadcastStatus({ force = false } = {}) {
+  if (statusBroadcastPromise) return statusBroadcastPromise;
+  const now = Date.now();
+  if (!force && now - lastStatusBroadcastAt < STATUS_BROADCAST_MIN_MS) {
+    return getStatus();
+  }
+  statusBroadcastPromise = (async () => {
+    const status = await getStatus();
+    updateTrayMenu(status);
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("status:update", status);
+    lastStatusBroadcastAt = Date.now();
+    return status;
+  })();
+  try {
+    return await statusBroadcastPromise;
+  } finally {
+    statusBroadcastPromise = null;
+  }
 }
 
 async function monitorMinecraft() {
@@ -541,8 +594,17 @@ async function monitorMinecraft() {
   if (running === gameRunning) return;
   const wasRunning = gameRunning;
   gameRunning = running;
-  if (running) beginGameSession();
-  else finishGameSession();
+  if (running) {
+    const wasLaunchAttempt = launchAttemptActive;
+    beginGameSession();
+    if (wasLaunchAttempt) {
+      stats.launchCount += 1;
+      saveStats();
+      launchAttemptActive = false;
+    }
+  } else {
+    finishGameSession();
+  }
   await broadcastStatus();
   await updateRpcActivity();
   if (wasRunning && !running && settings.restoreAfterExit && mainWindow) {
@@ -557,6 +619,25 @@ function createTray() {
   tray = new Tray(trayImage);
   tray.setToolTip("Vesper Launcher");
   tray.on("double-click", () => { mainWindow?.show(); mainWindow?.focus(); });
+}
+
+function configureContentSecurityPolicy() {
+  const filter = { urls: ["file://*/*"] };
+  const policy = [
+    "default-src 'self'",
+    "img-src 'self' data:",
+    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self'",
+    "connect-src 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+  const existing = session.defaultSession.webRequest.onHeadersReceived;
+  session.defaultSession.webRequest.onHeadersReceived(filter, (details, callback) => {
+    const headers = { ...details.responseHeaders, "Content-Security-Policy": [policy] };
+    callback({ responseHeaders: headers });
+  });
 }
 
 function createWindow() {
@@ -642,8 +723,20 @@ app.whenReady().then(async () => {
   createTray();
   configureUpdater();
   gameRunning = await isMinecraftRunning();
-  if (gameRunning) beginGameSession();
-  await broadcastStatus();
+  if (gameRunning) {
+    beginGameSession();
+  } else if (stats.activeSession) {
+    // Reconcile a session left behind by a launcher crash/forced shutdown.
+    const startedAt = new Date(stats.activeSession.startedAt);
+    if (Number.isFinite(startedAt.getTime())) {
+      gameStartedAt = startedAt;
+      finishGameSession();
+    } else {
+      stats.activeSession = null;
+      saveStats();
+    }
+  }
+  await broadcastStatus({ force: true });
   await connectRpc();
   monitorTimer = setInterval(() => monitorMinecraft().catch(() => {}), 4000);
 });
