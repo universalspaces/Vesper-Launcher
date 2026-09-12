@@ -12,7 +12,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "node_modules\.vesper-deps-0.3.1" (
+if not exist "node_modules\.vesper-deps-ready" (
   echo.
   echo [Vesper] Installing launcher dependencies for the first run...
   call npm ci
@@ -22,7 +22,7 @@ if not exist "node_modules\.vesper-deps-0.3.1" (
     pause
     exit /b 1
   )
-  >"node_modules\.vesper-deps-0.3.1" echo ready
+  >"node_modules\.vesper-deps-ready" echo ready
 )
 
 echo.
