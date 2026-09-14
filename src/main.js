@@ -2,10 +2,9 @@ const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, clipboard, 
 const { execFile, spawn } = require("node:child_process");
 const { promisify } = require("node:util");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
-const { Client: DiscordRPCClient } = require("@xhayper/discord-rpc");
-const { autoUpdater } = require("electron-updater");
+let DiscordRPCClient = null;
+let autoUpdater = null;
 const { PACK_VERSION, PACK_UUID, DISCORD_CLIENT_ID, DISCORD_LARGE_IMAGE_KEY, MINECRAFT_CACHE_MS, STATUS_BROADCAST_MIN_MS } = require("./config");
 
 const execFileAsync = promisify(execFile);
@@ -168,13 +167,20 @@ function setUpdateState(nextState) {
   sendUpdateState();
 }
 
+function ensureAutoUpdater() {
+  if (!autoUpdater) {
+    ({ autoUpdater } = require("electron-updater"));
+  }
+  return autoUpdater;
+}
+
 async function checkForLauncherUpdate() {
   if (!app.isPackaged || process.platform !== "win32") {
     setUpdateState({ status: "development", version: "", percent: 0, error: "" });
     return publicUpdateState();
   }
   try {
-    await autoUpdater.checkForUpdates();
+    await ensureAutoUpdater().checkForUpdates();
   } catch (error) {
     setUpdateState({ status: "error", error: error.message || "Update check failed." });
   }
@@ -186,23 +192,26 @@ function configureUpdater() {
     setUpdateState({ status: "development" });
     return;
   }
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = false;
-  autoUpdater.allowPrerelease = false;
-  autoUpdater.on("checking-for-update", () => setUpdateState({ status: "checking", percent: 0, error: "" }));
-  autoUpdater.on("update-available", (info) => setUpdateState({ status: "downloading", version: info.version || "", percent: 0, error: "" }));
-  autoUpdater.on("update-not-available", () => setUpdateState({ status: "current", version: "", percent: 0, error: "" }));
-  autoUpdater.on("download-progress", (progress) => setUpdateState({ status: "downloading", percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))) }));
-  autoUpdater.on("update-downloaded", (info) => setUpdateState({ status: "ready", version: info.version || updateState.version, percent: 100, error: "" }));
-  autoUpdater.on("error", (error) => setUpdateState({ status: "error", error: error?.message || "Update failed." }));
-  setTimeout(() => checkForLauncherUpdate().catch(() => {}), 5000);
+  const updater = ensureAutoUpdater();
+  // Do not download updates during the first few seconds of startup.
+  // The user can still check manually, and background checks begin after the UI is ready.
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = false;
+  updater.allowPrerelease = false;
+  updater.on("checking-for-update", () => setUpdateState({ status: "checking", percent: 0, error: "" }));
+  updater.on("update-available", (info) => setUpdateState({ status: "downloading", version: info.version || "", percent: 0, error: "" }));
+  updater.on("update-not-available", () => setUpdateState({ status: "current", version: "", percent: 0, error: "" }));
+  updater.on("download-progress", (progress) => setUpdateState({ status: "downloading", percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))) }));
+  updater.on("update-downloaded", (info) => setUpdateState({ status: "ready", version: info.version || updateState.version, percent: 100, error: "" }));
+  updater.on("error", (error) => setUpdateState({ status: "error", error: error?.message || "Update failed." }));
+  setTimeout(() => checkForLauncherUpdate().catch(() => {}), 15000);
   updateTimer = setInterval(() => checkForLauncherUpdate().catch(() => {}), 6 * 60 * 60 * 1000);
 }
 
 function installLauncherUpdate() {
   if (!app.isPackaged || updateState.status !== "ready") return false;
   isQuitting = true;
-  autoUpdater.quitAndInstall(false, true);
+  ensureAutoUpdater().quitAndInstall(false, true);
   return true;
 }
 
@@ -463,6 +472,9 @@ async function connectRpc() {
   }
   rpcStatus = "connecting";
   await broadcastStatus();
+  if (!DiscordRPCClient) {
+    ({ Client: DiscordRPCClient } = require("@xhayper/discord-rpc"));
+  }
   const client = new DiscordRPCClient({ clientId: DISCORD_CLIENT_ID });
   rpcClient = client;
   client.on("ready", async () => {
@@ -589,29 +601,55 @@ async function broadcastStatus({ force = false } = {}) {
   }
 }
 
+let monitorInFlight = false;
+
 async function monitorMinecraft() {
-  const running = await isMinecraftRunning();
-  if (running === gameRunning) return;
-  const wasRunning = gameRunning;
-  gameRunning = running;
-  if (running) {
-    const wasLaunchAttempt = launchAttemptActive;
-    beginGameSession();
-    if (wasLaunchAttempt) {
-      stats.launchCount += 1;
-      saveStats();
-      launchAttemptActive = false;
+  if (monitorInFlight) return;
+  monitorInFlight = true;
+  try {
+    const running = await isMinecraftRunning();
+    if (running === gameRunning) return;
+    const wasRunning = gameRunning;
+    gameRunning = running;
+    if (running) {
+      const wasLaunchAttempt = launchAttemptActive;
+      invalidateMinecraftInfoCache();
+      const info = await getMinecraftInfo({ force: true });
+      lastMinecraftInfo = info;
+      beginGameSession();
+      if (wasLaunchAttempt) {
+        stats.launchCount += 1;
+        saveStats();
+        launchAttemptActive = false;
+      }
+    } else {
+      finishGameSession();
+      invalidateMinecraftInfoCache();
     }
-  } else {
-    finishGameSession();
+    await broadcastStatus({ force: true });
+    await updateRpcActivity();
+    if (wasRunning && !running && settings.restoreAfterExit && mainWindow) {
+      mainWindow.show();
+      mainWindow.restore();
+      mainWindow.focus();
+    }
+  } finally {
+    monitorInFlight = false;
   }
-  await broadcastStatus();
-  await updateRpcActivity();
-  if (wasRunning && !running && settings.restoreAfterExit && mainWindow) {
-    mainWindow.show();
-    mainWindow.restore();
-    mainWindow.focus();
-  }
+}
+
+function scheduleMinecraftMonitor() {
+  if (monitorTimer) clearTimeout(monitorTimer);
+  const delay = launchAttemptActive ? 1500 : gameRunning ? 8000 : 12000;
+  monitorTimer = setTimeout(async () => {
+    try {
+      await monitorMinecraft();
+    } catch {
+      // A later scheduled pass will retry without interrupting the launcher.
+    } finally {
+      scheduleMinecraftMonitor();
+    }
+  }, delay);
 }
 
 function createTray() {
@@ -722,28 +760,40 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   configureUpdater();
-  gameRunning = await isMinecraftRunning();
-  if (gameRunning) {
-    beginGameSession();
-  } else if (stats.activeSession) {
-    // Reconcile a session left behind by a launcher crash/forced shutdown.
-    const startedAt = new Date(stats.activeSession.startedAt);
-    if (Number.isFinite(startedAt.getTime())) {
-      gameStartedAt = startedAt;
-      finishGameSession();
-    } else {
-      stats.activeSession = null;
-      saveStats();
-    }
+
+  // Keep the first paint responsive. Expensive Windows probes and optional
+  // services start shortly after the window becomes usable.
+  setTimeout(() => {
+    monitorMinecraft().catch(() => {});
+  }, 350);
+
+  if (settings.rpcEnabled) {
+    setTimeout(() => connectRpc().catch(() => {}), 2500);
+  } else {
+    rpcStatus = "disabled";
   }
-  await broadcastStatus({ force: true });
-  await connectRpc();
-  monitorTimer = setInterval(() => monitorMinecraft().catch(() => {}), 4000);
+
+  // Reconcile any session left behind by a crash after the first probe.
+  setTimeout(() => {
+    if (gameRunning) return;
+    if (stats.activeSession) {
+      const startedAt = new Date(stats.activeSession.startedAt);
+      if (Number.isFinite(startedAt.getTime())) {
+        gameStartedAt = startedAt;
+        finishGameSession();
+      } else {
+        stats.activeSession = null;
+        saveStats();
+      }
+    }
+  }, 1200);
+
+  scheduleMinecraftMonitor();
 });
 
 app.on("before-quit", () => {
   isQuitting = true;
-  if (monitorTimer) clearInterval(monitorTimer);
+  if (monitorTimer) clearTimeout(monitorTimer);
   if (updateTimer) clearInterval(updateTimer);
   if (gameRunning) finishGameSession();
   disconnectRpc().catch(() => {});
