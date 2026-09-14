@@ -1,6 +1,6 @@
 {
   "name": "vesper-launcher",
-  "version": "0.3.2",
+  "version": "0.3.2-2",
   "description": "Vesper launcher for Minecraft Bedrock on Windows",
   "main": "src/main.js",
   "author": "universalspaces",
