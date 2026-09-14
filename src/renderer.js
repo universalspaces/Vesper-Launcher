@@ -133,11 +133,21 @@ function renderRecentSessions(sessions = []) {
 function updateActivity() {
   const stats = liveStats();
   if (!stats) return;
-  byId("stat-total").textContent = formatDuration(stats.totalPlaytimeMs);
-  byId("stat-sessions").textContent = String(stats.sessionCount || 0);
-  byId("stat-longest").textContent = formatDuration(Math.max(stats.longestSessionMs || 0, stats.currentSessionMs || 0));
-  byId("stat-launches").textContent = String(stats.launchCount || 0);
-  byId("last-played-label").textContent = stats.lastPlayedAt ? `Last played ${formatWhen(stats.lastPlayedAt)}` : "No sessions yet";
+  const total = formatDuration(stats.totalPlaytimeMs);
+  const sessions = String(stats.sessionCount || 0);
+  const longest = formatDuration(Math.max(stats.longestSessionMs || 0, stats.currentSessionMs || 0));
+  const launches = String(stats.launchCount || 0);
+  byId("stat-total").textContent = total;
+  byId("stat-sessions").textContent = sessions;
+  byId("stat-longest").textContent = longest;
+  byId("stat-launches").textContent = launches;
+  byId("home-stat-total").textContent = total;
+  byId("home-stat-sessions").textContent = sessions;
+  byId("home-stat-longest").textContent = longest;
+  byId("home-stat-launches").textContent = launches;
+  const lastPlayed = stats.lastPlayedAt ? `Last played ${formatWhen(stats.lastPlayedAt)}` : "No sessions yet";
+  byId("last-played-label").textContent = lastPlayed;
+  byId("home-last-played").textContent = lastPlayed;
   const activityState = byId("activity-state");
   activityState.textContent = currentStatus.gameRunning ? "LIVE" : "IDLE";
   activityState.classList.toggle("ready", currentStatus.gameRunning);
@@ -211,6 +221,7 @@ function applyStatus(status) {
   byId("side-pack").textContent = packText;
   byId("pack-card-title").textContent = pack.status === "installed" ? `v${pack.installedVersion}` : packText;
   byId("pack-card-copy").textContent = `v${status.packVersion} bundled`;
+  byId("home-pack-version").textContent = `v${status.packVersion}`;
   byId("pack-card-badge").textContent = packBadge(pack);
   byId("pack-card-badge").classList.toggle("connected", ["installed", "newer"].includes(pack.status));
   setDot(byId("pack-dot"), packDot);
