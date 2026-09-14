@@ -1,6 +1,6 @@
 {
   "name": "vesper-launcher",
-  "version": "0.3.2-2",
+  "version": "0.4.0",
   "description": "Vesper launcher for Minecraft Bedrock on Windows",
   "main": "src/main.js",
   "author": "universalspaces",
@@ -40,7 +40,12 @@
     "win": {
       "icon": "assets/icon.ico",
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "publish": [
         {
@@ -55,7 +60,20 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Vesper Launcher"
+      "shortcutName": "Vesper Launcher",
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeader": "build/installerHeader.bmp",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "uninstallerSidebar": "build/uninstallerSidebar.bmp",
+      "installerLanguages": [
+        "en_US",
+        "de_DE"
+      ],
+      "language": 1033,
+      "perMachine": false
     },
     "artifactName": "Vesper-Launcher-Setup-${version}-${arch}.${ext}"
   },
